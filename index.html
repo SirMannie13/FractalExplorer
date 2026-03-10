@@ -47,7 +47,7 @@
       </select>
 
       <label>Max iterations: <span id="itersVal" class="mono"></span></label>
-      <input id="iters" type="range" min="50" max="2000" step="10" value="250" />
+      <input id="iters" type="range" min="1" max="250" step="1" value="150" />
 
       <label>Zoom: <span id="zoomVal" class="mono"></span></label>
       <input id="zoom" type="range" min="0.2" max="2000" step="0.2" value="1" />
@@ -103,6 +103,18 @@
     const canvas = document.getElementById("cv");
     const ctx = canvas.getContext("2d", { alpha: false });
 
+    const back = document.createElement("canvas");
+    const backCtx = back.getContext("2d", { alpha: false });
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    
+    let displayW = 0;
+    let displayH = 0;
+    
+    // Smoother scaling when rendering at low scale (optional)
+    ctx.imageSmoothingEnabled = true;
+    backCtx.imageSmoothingEnabled = true;
+
     const el = (id) => document.getElementById(id);
     const kind = el("kind");
     const scheme = el("scheme");
@@ -146,10 +158,16 @@
 
     function resizeCanvas() {
       const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-      // actual canvas buffer size will be set during render with render scale
-      canvas.style.width = "100%";
-      canvas.style.height = "100%";
       canvas._dpr = dpr;
+        
+      const rect = canvas.getBoundingClientRect();
+      displayW = Math.max(2, Math.floor(rect.width * dpr));
+      displayH = Math.max(2, Math.floor(rect.height * dpr));
+        
+      // Only resize the visible canvas here (not every render)
+      canvas.width = displayW;
+      canvas.height = displayH;
+        
       requestRenderDebounced(0);
     }
     window.addEventListener("resize", resizeCanvas);
@@ -173,17 +191,13 @@
       itersVal.textContent = s.iters;
       zoomVal.textContent = s.zoom.toFixed(2);
 
-      const rect = canvas.getBoundingClientRect();
-      const dpr = canvas._dpr || 1;
-      const w = Math.max(2, Math.floor(rect.width * dpr * s.scale));
-      const h = Math.max(2, Math.floor(rect.height * dpr * s.scale));
-
-      canvas.width = w;
-      canvas.height = h;
+      // Worker render resolution (can be smaller for speed)
+      const w = Math.max(2, Math.floor(displayW * s.scale));
+      const h = Math.max(2, Math.floor(displayH * s.scale));
 
       token++;
       const myToken = token;
-      setStatus("rendering…");
+      setStatus("rendering…"); // don't clear the screen anymore
 
       worker.postMessage({
         token: myToken,
@@ -203,8 +217,19 @@
       const { token: t, w, h, buffer, ms } = ev.data;
       if (t !== token) return; // ignore old render
 
+      // Ensure back buffer matches worker output
+      if (back.width !== w || back.height !== h) {
+        back.width = w;
+        back.height = h;
+      }
+
       const img = new ImageData(new Uint8ClampedArray(buffer), w, h);
-      ctx.putImageData(img, 0, 0);
+      backCtx.putImageData(img, 0, 0);
+
+      // Draw to visible canvas (full size), scaling up if needed
+      ctx.clearRect(0, 0, displayW, displayH);
+      ctx.drawImage(back, 0, 0, displayW, displayH);
+
       setStatus(`done (${ms.toFixed(0)} ms)`);
     };
 
@@ -217,7 +242,7 @@
     el("reset").addEventListener("click", () => {
       kind.value = "Mandelbrot";
       scheme.value = "Fire";
-      iters.value = "250";
+      iters.value = "100";
       zoom.value = "1";
       cx.value = "-0.5";
       cy.value = "0";
@@ -231,12 +256,15 @@
     function applyPreset(p) {
       presetName.textContent = p.name;
       kind.value = p.kind;
-      iters.value = String(p.iters ?? 250);
+        
+      iters.value = String(clamp(Number(p.iters ?? 50), 1, 100)); // <- clamps preset iters
+        
       zoom.value = String(p.zoom ?? 1);
       cx.value = String(p.cx ?? -0.5);
       cy.value = String(p.cy ?? 0);
       if (p.jre != null) jre.value = String(p.jre);
       if (p.jim != null) jim.value = String(p.jim);
+        
       requestRenderDebounced(0);
     }
 
